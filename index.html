@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <title>Hip Abduction – Mobile Pose</title>
-  <meta name="theme-color" content="#4285f4" />
   <style>
     :root{
       --primary:#4285f4; --green:#34a853; --amber:#f9ab00; --red:#ea4335;
@@ -20,8 +21,8 @@
     #video{width:100%;height:auto;display:block;transform:scaleX(-1)}
     #overlay{position:absolute;inset:0}
     .row{display:flex;gap:8px;flex-wrap:wrap}
-    .btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;background:var(--primary);color:#fff;font-weight:600}
-    .btn[disabled]{opacity:.5}
+    .btn{appearance:none;border:0;border-radius:10px;padding:10px 14px;background:var(--primary);color:#fff;font-weight:600;cursor:pointer}
+    .btn[disabled]{opacity:.5;cursor:not-allowed}
     .status-dot{width:10px;height:10px;border-radius:999px;display:inline-block;margin-right:6px;vertical-align:middle}
     .dot-active{background:var(--green);box-shadow:0 0 6px var(--green)}
     .dot-idle{background:#cbd5e1}
@@ -36,6 +37,7 @@
     .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;white-space:pre-wrap;background:rgba(255,255,255,.06);padding:8px;border-radius:8px;max-height:140px;overflow:auto}
     .progress{height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden}
     .progress>div{height:100%;background:var(--primary);width:0%}
+    .note{background:#fff3cd;border:1px solid #ffe08a;color:#7c5a00;padding:10px;border-radius:10px}
   </style>
 </head>
 <body>
@@ -43,8 +45,9 @@
   <main>
     <div class="card">
       <p>Pastatyk telefoną taip, kad matytųsi klubai ir keliai (frontalinis vaizdas). Programa rodys kairės/dešinės klubo abdukciją ir vidurkį. Duomenų rinkimas: 3 s langas, saugomi tik 1–2 s.</p>
-      <div id="perm" style="display:none;background:#fff3cd;border:1px solid #ffe08a;color:#7c5a00;padding:10px;border-radius:10px">
-        Reikia kameros leidimo. Patikrink naršyklės nustatymus ir spausk <button id="retry" class="btn" style="padding:6px 10px">Leisti kamerą</button>.
+      <div id="perm" class="note" style="display:none">
+        Reikia kameros leidimo. Paspausk <button id="startCam" class="btn" style="padding:6px 10px">Leisti kamerą</button>,
+        tada naršyklėje patvirtink „Allow“.
       </div>
     </div>
 
@@ -55,7 +58,7 @@
 
     <div class="card panel">
       <div class="kv">
-        <div><span id="dot" class="status-dot dot-idle"></span><span id="label">Kraunama…</span></div>
+        <div><span id="dot" class="status-dot dot-idle"></span><span id="label">Laukiu kameros…</span></div>
         <div id="avgVal" class="val">–</div>
       </div>
       <div class="row" style="gap:12px">
@@ -65,7 +68,7 @@
       <div id="warn" class="warn">Statusas: laukiu pozos…</div>
       <div class="progress" style="margin-top:10px"><div id="bar"></div></div>
       <div class="row" style="margin-top:10px">
-        <button id="start" class="btn">Pradėti duomenų rinkimą</button>
+        <button id="start" class="btn" disabled>Pradėti duomenų rinkimą</button>
         <button id="dl" class="btn" disabled>Atsisiųsti JSON</button>
       </div>
     </div>
