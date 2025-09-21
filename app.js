@@ -17,13 +17,13 @@ const dlBtn = document.getElementById('dl');
 const bar = document.getElementById('bar');
 const dbg = document.getElementById('dbg');
 
-// --- paciento kodas (tas pats kaip manual app) ---
+// --- paciento kodas (1–10 skaičių), kaip manual app ---
 let patientCode = null;
 function askPatientCode(){
   let ok = false;
   while(!ok){
     const val = prompt('Įveskite paciento/tyrimo kodą (iki 10 skaitmenų):', '');
-    if (val === null) return false; // atšaukė
+    if (val === null) return false;
     if (/^\d{1,10}$/.test(val)) { patientCode = val; ok = true; }
     else alert('Kodas turi būti 1–10 skaitmenų.');
   }
@@ -31,13 +31,14 @@ function askPatientCode(){
 }
 
 // --- įrašymo parametrai ---
-const RECORD_MS = 2000;  // 2 s
-const SAMPLE_MS = 10;    // mėginys kas 10 ms
+const RECORD_MS = 2000;           // 2 s
+const SAMPLE_MS = 10;             // 10 ms
+const RECORD_SAMPLES = RECORD_MS / SAMPLE_MS; // 200 tiksliai
 
 let collectedData = [];
 let isCollecting = false;
-let t0 = 0;
-let sampler = null; // setInterval
+let sampleIdx = 0;   // tiksliam 0.01 s, 0.02 s ir t.t. laiko žingsniui
+let sampler = null;
 
 // --- MediaPipe / landmarks ---
 let pose;
@@ -47,7 +48,7 @@ const LM = {
   LEFT_KNEE: 25, RIGHT_KNEE: 26
 };
 
-// --- vektoriai / kampai (TOKS PAT, kaip manual app) ---
+// --- vektoriai / kampai (IDENTIŠKI kaip manual app) ---
 const unit = (v)=>{ const n=Math.hypot(v.x,v.y); return n>1e-6?{x:v.x/n,y:v.y/n}:{x:0,y:0}; };
 const sub  = (a,b)=>({x:a.x-b.x, y:a.y-b.y});
 const dotp = (a,b)=>a.x*b.x + a.y*b.y;
@@ -62,7 +63,7 @@ function bodyMidlineFromLandmarks(L){
   return { S_mid, H_mid, midDown };
 }
 
-// Abdukcija = kampas tarp šlaunies vektoriaus (HIP→KNEE) ir midDown (TOKS PAT, kaip manual app)
+// Abdukcija = kampas tarp HIP→KNEE ir midDown
 function abductionPerHip2D(HIP, KNEE, midDown){
   return ang(sub(KNEE, HIP), midDown);
 }
@@ -73,7 +74,26 @@ const colAbd = (a)=> a>=SAFE.greenMin && a<=SAFE.greenMax ? '#34a853'
                     : a>SAFE.greenMax && a<=SAFE.yellowMax ? '#f9ab00'
                     : '#ea4335';
 
-// (jei norėtum glodinimo, galima gražinti – bet sakai, kad telefonas ant stovo, tai palieku be EMA/median)
+// --- telefonos palinkimas (tilt), kaip manual app ---
+let tiltDeg = null; // laipsniais
+function onDeviceOrientation(e){
+  const portrait = window.innerHeight >= window.innerWidth;
+  const primaryTilt = portrait ? (e.gamma ?? 0) : (e.beta ?? 0); // ° apytiksliai
+  tiltDeg = Number(primaryTilt) || 0;
+  // rodom įspėjimą UI
+  if (Math.abs(tiltDeg) > 5) {
+    warn.textContent = `⚠️ Telefonas pakreiptas ${tiltDeg.toFixed(1)}° (>5°). Ištiesinkite įrenginį.`;
+  }
+}
+async function enableTilt(){
+  try{
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+      const perm = await DeviceOrientationEvent.requestPermission();
+      if (perm !== 'granted') return;
+    }
+    window.addEventListener('deviceorientation', onDeviceOrientation, true);
+  }catch(_){}
+}
 
 // --- kamera ---
 async function initCamera(){
@@ -81,6 +101,9 @@ async function initCamera(){
     const cont = askPatientCode();
     if (!cont) return;
   }
+  // bandome įjungti tilt jutiklį (tyliai) prieš pradedant
+  enableTilt();
+
   try{
     let constraints = { video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false };
     let stream = await navigator.mediaDevices.getUserMedia(constraints).catch(()=>null);
@@ -136,7 +159,7 @@ const visOK = (p)=> (p.visibility ?? 1) >= 0.6;
 // --- paskutinė būsena sampleriui ---
 let latest = { ok:false, angles:null, midline:null, lms:null };
 
-// --- overlay: pečiai/klubai/keliai + šlaunų linijos + S_mid↔H_mid vidurio linija ---
+// --- overlay: pečiai/klubai/keliai + šlaunys + S_mid↔H_mid ---
 function drawOverlay(L, angles, midline){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   if (!L) return;
@@ -154,12 +177,12 @@ function drawOverlay(L, angles, midline){
   ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(Spt.x, Spt.y); ctx.lineTo(Hpt.x, Hpt.y); ctx.stroke();
 
-  // HIP→KNEE linijos
+  // HIP→KNEE
   ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 5; ctx.lineCap='round';
   ctx.beginPath(); ctx.moveTo(LH.x,LH.y); ctx.lineTo(LK.x,LK.y); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(RH.x,RH.y); ctx.lineTo(RK.x,RK.y); ctx.stroke();
 
-  // mažos žymės
+  // žymos
   ctx.fillStyle = '#ffffff';
   for (const p of [LS, RS, LH, RH, LK, RK]){
     ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fill();
@@ -213,7 +236,7 @@ async function loop(){
                visOK(L.leftKnee) && visOK(L.rightKnee);
 
     if (ok){
-      // BENDRAS su manual app: S_mid → H_mid
+      // BENDRA su manual app: S_mid → H_mid
       const midline = bodyMidlineFromLandmarks(L);
       const abdL = abductionPerHip2D(L.leftHip,  L.leftKnee,  midline.midDown);
       const abdR = abductionPerHip2D(L.rightHip, L.rightKnee, midline.midDown);
@@ -225,8 +248,7 @@ async function loop(){
       abdLVal.textContent = isFinite(abdL)? `${abdL.toFixed(0)}°` : '–';
       abdRVal.textContent = isFinite(abdR)? `${abdR.toFixed(0)}°` : '–';
 
-      const colorAvg = colAbd(avg);
-      avgVal.style.color = colorAvg;
+      avgVal.style.color = colAbd(avg);
       abdLVal.style.color = colAbd(abdL);
       abdRVal.style.color = colAbd(abdR);
       dot.className = 'status-dot dot-active';
@@ -258,42 +280,61 @@ async function loop(){
   requestAnimationFrame(loop);
 }
 
-// --- įrašymas kas 10 ms, 2 sekundes ---
+// --- įrašymas kas 10 ms (tikslus laikas 0.01, 0.02, …) ---
 function startCollect(){
   if (isCollecting) return;
-  isCollecting = true; t0 = Date.now();
+  isCollecting = true;
   collectedData = [];
+  sampleIdx = 0;
   bar.style.width = '0%';
   dot.className = 'status-dot dot-rec';
   label.textContent = 'Įrašau (2 s)…';
   dlBtn.disabled = true;
 
-  sampler = setInterval(()=>{
-    const t = Date.now() - t0;
-    const prog = (t/RECORD_MS)*100; bar.style.width = `${Math.min(100,prog)}%`;
+  // Įspėjimas jei telefonas pakrypęs >5°
+  if (tiltDeg != null && Math.abs(tiltDeg) > 5){
+    const proceed = confirm(`Telefonas pakreiptas ${tiltDeg.toFixed(1)}° (>5°).\nAr tikrai norite tęsti įrašą?`);
+    if (!proceed){ stopCollect(); return; }
+  }
 
-    if (t > RECORD_MS){
+  sampler = setInterval(()=>{
+    const prog = ((sampleIdx+1)/RECORD_SAMPLES)*100;
+    bar.style.width = `${Math.min(100,prog)}%`;
+
+    if (sampleIdx >= RECORD_SAMPLES){
       stopCollect();
       return;
     }
-    if (!latest.ok || !latest.angles) return;
+    if (!latest.ok || !latest.angles || !latest.midline || !latest.lms){
+      sampleIdx++; // laikas vis tiek „eina“, kad būtų tikslūs žingsniai
+      return;
+    }
+
+    // tikslus „time“: 0.01, 0.02, ...
+    const timeSec = +(((sampleIdx+1)*SAMPLE_MS)/1000).toFixed(2); // sekundėmis
 
     const L = latest.lms;
     const md = latest.midline;
+    const A = latest.angles;
 
+    // JSON struktūra tokia pati kaip manual app (plius „time“)
     collectedData.push({
       timestamp: Date.now(),
-      time: t,
+      time: timeSec,
       patientCode: patientCode || null,
       angles: {
-        abductionAvg:   +latest.angles.avg.toFixed(2),
-        abductionLeft:  +latest.angles.abdL.toFixed(2),
-        abductionRight: +latest.angles.abdR.toFixed(2)
+        abductionLeft:  +A.abdL.toFixed(2),
+        abductionRight: +A.abdR.toFixed(2)
+      },
+      device: {
+        tiltDeg: tiltDeg == null ? null : +tiltDeg.toFixed(2),
+        tiltOK: tiltDeg == null ? null : (Math.abs(tiltDeg) <= 5)
       },
       midline: {
         from: { x:+md.S_mid.x.toFixed(4), y:+md.S_mid.y.toFixed(4) },
         to:   { x:+md.H_mid.x.toFixed(4), y:+md.H_mid.y.toFixed(4) }
       },
+      midlineOffset: { dx: 0, dy: 0 }, // mediapipe app neturi rankinio poslinkio
       landmarks: {
         leftShoulder:  { x:L.leftShoulder.x,  y:L.leftShoulder.y,  v:L.leftShoulder.visibility??1 },
         rightShoulder: { x:L.rightShoulder.x, y:L.rightShoulder.y, v:L.rightShoulder.visibility??1 },
@@ -303,6 +344,8 @@ function startCollect(){
         rightKnee:     { x:L.rightKnee.x,     y:L.rightKnee.y,     v:L.rightKnee.visibility??1 }
       }
     });
+
+    sampleIdx++;
   }, SAMPLE_MS);
 }
 
@@ -332,3 +375,4 @@ startCamBtn?.addEventListener('click', initCamera);
 document.addEventListener('DOMContentLoaded', ()=>{
   perm.style.display = 'block'; // reikalingas vartotojo gestas kamerai paleisti
 });
+
