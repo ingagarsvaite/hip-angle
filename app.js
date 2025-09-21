@@ -1,46 +1,49 @@
 import { PoseLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/+esm';
 
-// UI
+// ===== UI =====
 const video = document.getElementById('video');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
+
 const perm = document.getElementById('perm');
 const startCamBtn = document.getElementById('startCam');
+
 const dot = document.getElementById('dot');
 const label = document.getElementById('label');
 const avgVal = document.getElementById('avgVal');
 const abdLVal = document.getElementById('abdL');
 const abdRVal = document.getElementById('abdR');
 const warn = document.getElementById('warn');
+
 const startBtn = document.getElementById('start');
 const dlBtn = document.getElementById('dl');
 const bar = document.getElementById('bar');
 const dbg = document.getElementById('dbg');
 
-// --- paciento kodas (1–10 skaičių), kaip manual app ---
+// ===== Paciento kodas (1–10 skaitmenų) – kaip manual app =====
 let patientCode = null;
 function askPatientCode(){
   let ok = false;
   while(!ok){
     const val = prompt('Įveskite paciento/tyrimo kodą (iki 10 skaitmenų):', '');
-    if (val === null) return false;
+    if (val === null) return false; // atšaukė
     if (/^\d{1,10}$/.test(val)) { patientCode = val; ok = true; }
     else alert('Kodas turi būti 1–10 skaitmenų.');
   }
   return true;
 }
 
-// --- įrašymo parametrai ---
-const RECORD_MS = 2000;           // 2 s
-const SAMPLE_MS = 10;             // 10 ms
-const RECORD_SAMPLES = RECORD_MS / SAMPLE_MS; // 200 tiksliai
+// ===== Įrašymo parametrai =====
+const RECORD_MS = 2000;                 // 2 s
+const SAMPLE_MS = 10;                   // 10 ms
+const RECORD_SAMPLES = RECORD_MS / SAMPLE_MS; // 200 ėminių tiksliai
 
 let collectedData = [];
 let isCollecting = false;
-let sampleIdx = 0;   // tiksliam 0.01 s, 0.02 s ir t.t. laiko žingsniui
+let sampleIdx = 0;     // 0,1,2,... → time_s = (idx+1)*0.01
 let sampler = null;
 
-// --- MediaPipe / landmarks ---
+// ===== MediaPipe / landmarks =====
 let pose;
 const LM = {
   LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
@@ -48,7 +51,7 @@ const LM = {
   LEFT_KNEE: 25, RIGHT_KNEE: 26
 };
 
-// --- vektoriai / kampai (IDENTIŠKI kaip manual app) ---
+// ===== Vektoriai / kampai – identiška formulė kaip manual app =====
 const unit = (v)=>{ const n=Math.hypot(v.x,v.y); return n>1e-6?{x:v.x/n,y:v.y/n}:{x:0,y:0}; };
 const sub  = (a,b)=>({x:a.x-b.x, y:a.y-b.y});
 const dotp = (a,b)=>a.x*b.x + a.y*b.y;
@@ -57,53 +60,38 @@ const ang  = (a,b)=>{ const c=Math.max(-1,Math.min(1, dotp(unit(a),unit(b)))); r
 // Kūno vidurio ašis: S_mid → H_mid (pečių vidurio taškas į klubų vidurio tašką), nukreipta žemyn
 function bodyMidlineFromLandmarks(L){
   const S_mid = { x:(L.leftShoulder.x + L.rightShoulder.x)/2, y:(L.leftShoulder.y + L.rightShoulder.y)/2 };
-  const H_mid = { x:(L.leftHip.x + L.rightHip.x)/2,         y:(L.leftHip.y + L.rightHip.y)/2 };
+  const H_mid = { x:(L.leftHip.x + L.rightHip.x)/2,           y:(L.leftHip.y + L.rightHip.y)/2 };
   let midDown = unit(sub(H_mid, S_mid));
   if (midDown.y < 0) midDown = { x:-midDown.x, y:-midDown.y };
   return { S_mid, H_mid, midDown };
 }
 
-// Abdukcija = kampas tarp HIP→KNEE ir midDown
+// Abdukcija = kampas tarp HIP→KNEE ir midDown (ta pati formulė)
 function abductionPerHip2D(HIP, KNEE, midDown){
   return ang(sub(KNEE, HIP), midDown);
 }
 
-// --- spalviniai lygiai (IDENTIŠKI) ---
+// ===== Spalviniai lygiai – tokie patys =====
 const SAFE = { greenMin:30, greenMax:45, yellowMax:60 };
 const colAbd = (a)=> a>=SAFE.greenMin && a<=SAFE.greenMax ? '#34a853'
                     : a>SAFE.greenMax && a<=SAFE.yellowMax ? '#f9ab00'
                     : '#ea4335';
 
-async function initCamera(){
-  if (!patientCode){
-    const cont = askPatientCode();
-    if (!cont) return;
-  }
-
-  // Įjungiam tilt jutiklį analogiškai kaip manual app
-  await enableSensors();
-  ...
-}
-
-// --- telefonos palinkimas (tilt) — kaip manual app ---
-let tiltDeg = null;    // esamas pakrypimas (laipsniais)
-let tiltOK  = null;    // ar |tilt| <= 5°
+// ===== Telefonos palinkimas (tilt) – kaip manual app =====
+let tiltDeg = null;    // laipsniais
+let tiltOK  = null;    // |tilt| <= 5°
 let sensorsEnabled = false;
 
 function updateTiltWarn(){
-  if (tiltDeg == null){
-    // nieko nerodom kol nėra duomenų
-    return;
-  }
+  if (tiltDeg == null) return;
   if (Math.abs(tiltDeg) > 5){
     warn.textContent = `⚠️ Telefonas pakreiptas ${tiltDeg.toFixed(1)}° (>5°). Ištiesinkite įrenginį.`;
   }
 }
 
 function onDeviceOrientation(e){
-  // ta pati logika kaip manual app'e:
   const portrait = window.innerHeight >= window.innerWidth;
-  const primaryTilt = portrait ? (e.gamma ?? 0) : (e.beta ?? 0); // ° apytiksliai
+  const primaryTilt = portrait ? (e.gamma ?? 0) : (e.beta ?? 0); // apytiksliai °
   tiltDeg = Number(primaryTilt) || 0;
   tiltOK  = Math.abs(tiltDeg) <= 5;
   updateTiltWarn();
@@ -124,7 +112,18 @@ async function enableSensors(){
   }
 }
 
+// ===== Kamera =====
+async function initCamera(){
+  // Paciento kodas
+  if (!patientCode){
+    const cont = askPatientCode();
+    if (!cont) return;
+  }
+  // Tilt jutiklis (leidimas ant vartotojo gesto)
+  await enableSensors();
+
   try{
+    // Kamera
     let constraints = { video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false };
     let stream = await navigator.mediaDevices.getUserMedia(constraints).catch(()=>null);
     if (!stream){ stream = await navigator.mediaDevices.getUserMedia({video:true, audio:false}); }
@@ -135,18 +134,21 @@ async function enableSensors(){
     await new Promise(res => { if (video.readyState>=1) res(); else video.onloadedmetadata=res; });
     await video.play();
 
+    // UI
     perm.style.display = 'none';
     label.textContent = 'Kamera aktyvi';
     resizeCanvas();
 
+    // MediaPipe
     if (!pose) await initPose();
+
     startBtn.disabled = false;
     requestAnimationFrame(loop);
   } catch(err){
     console.error('Kameros klaida:', err);
     perm.style.display = 'block';
     label.textContent = 'Klaida: nepavyko pasiekti kameros';
-    warn.textContent = 'Patikrink naršyklės leidimus (Settings > Browser > Camera: Allow).';
+    warn.textContent = 'Patikrink naršyklės leidimus (naršyklėje „Allow“ arba sistemoje Camera: Allow).';
   }
 }
 
@@ -157,7 +159,7 @@ function resizeCanvas(){
 }
 window.addEventListener('resize', resizeCanvas);
 
-// --- MediaPipe init ---
+// ===== MediaPipe init =====
 async function initPose(){
   const vision = await FilesetResolver.forVisionTasks(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm'
@@ -176,10 +178,10 @@ async function initPose(){
 }
 const visOK = (p)=> (p.visibility ?? 1) >= 0.6;
 
-// --- paskutinė būsena sampleriui ---
+// ===== Būsena sampleriui =====
 let latest = { ok:false, angles:null, midline:null, lms:null };
 
-// --- overlay: pečiai/klubai/keliai + šlaunys + S_mid↔H_mid ---
+// ===== Overlay (pečiai/klubai/keliai + šlaunys + S_mid↔H_mid) =====
 function drawOverlay(L, angles, midline){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   if (!L) return;
@@ -236,7 +238,7 @@ function updateDebug(L){
     `LK ${fmt(L.leftKnee)} RK ${fmt(L.rightKnee)}`;
 }
 
-// --- pagrindinis ciklas ---
+// ===== Pagrindinis ciklas =====
 async function loop(){
   if (!pose || !video.videoWidth){ requestAnimationFrame(loop); return; }
   const out = await pose.detectForVideo(video, performance.now());
@@ -300,7 +302,7 @@ async function loop(){
   requestAnimationFrame(loop);
 }
 
-// --- įrašymas kas 10 ms (tikslus laikas 0.01, 0.02, …) ---
+// ===== Įrašymas kas 10 ms (tikslus laikas 0.01, 0.02, …) =====
 function startCollect(){
   if (isCollecting) return;
   isCollecting = true;
@@ -331,7 +333,7 @@ function startCollect(){
     }
 
     // tikslus „time“: 0.01, 0.02, ...
-    const timeSec = +(((sampleIdx+1)*SAMPLE_MS)/1000).toFixed(2); // sekundėmis
+    const timeSec = +(((sampleIdx+1)*SAMPLE_MS)/1000).toFixed(2); // s
 
     const L = latest.lms;
     const md = latest.midline;
@@ -354,7 +356,7 @@ function startCollect(){
         from: { x:+md.S_mid.x.toFixed(4), y:+md.S_mid.y.toFixed(4) },
         to:   { x:+md.H_mid.x.toFixed(4), y:+md.H_mid.y.toFixed(4) }
       },
-      midlineOffset: { dx: 0, dy: 0 }, // mediapipe app neturi rankinio poslinkio
+      midlineOffset: { dx: 0, dy: 0 }, // (šiame app’e rankinio poslinkio nėra)
       landmarks: {
         leftShoulder:  { x:L.leftShoulder.x,  y:L.leftShoulder.y,  v:L.leftShoulder.visibility??1 },
         rightShoulder: { x:L.rightShoulder.x, y:L.rightShoulder.y, v:L.rightShoulder.visibility??1 },
@@ -387,7 +389,7 @@ function downloadJSON(){
   URL.revokeObjectURL(url);
 }
 
-// events
+// ===== Events =====
 startBtn.addEventListener('click', startCollect);
 dlBtn.addEventListener('click', downloadJSON);
 startCamBtn?.addEventListener('click', initCamera);
@@ -395,4 +397,3 @@ startCamBtn?.addEventListener('click', initCamera);
 document.addEventListener('DOMContentLoaded', ()=>{
   perm.style.display = 'block'; // reikalingas vartotojo gestas kamerai paleisti
 });
-
