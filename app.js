@@ -17,14 +17,27 @@ const dlBtn = document.getElementById('dl');
 const bar = document.getElementById('bar');
 const dbg = document.getElementById('dbg');
 
+// --- paciento kodas (tas pats kaip manual app) ---
+let patientCode = null;
+function askPatientCode(){
+  let ok = false;
+  while(!ok){
+    const val = prompt('Įveskite paciento/tyrimo kodą (iki 10 skaitmenų):', '');
+    if (val === null) return false; // atšaukė
+    if (/^\d{1,10}$/.test(val)) { patientCode = val; ok = true; }
+    else alert('Kodas turi būti 1–10 skaitmenų.');
+  }
+  return true;
+}
+
 // --- įrašymo parametrai ---
-const RECORD_MS = 2000;  // bendra trukmė: 2 s
+const RECORD_MS = 2000;  // 2 s
 const SAMPLE_MS = 10;    // mėginys kas 10 ms
 
 let collectedData = [];
 let isCollecting = false;
 let t0 = 0;
-let sampler = null; // setInterval rankenėlė
+let sampler = null; // setInterval
 
 // --- MediaPipe / landmarks ---
 let pose;
@@ -34,46 +47,40 @@ const LM = {
   LEFT_KNEE: 25, RIGHT_KNEE: 26
 };
 
-// --- vektoriai / kampai ---
+// --- vektoriai / kampai (TOKS PAT, kaip manual app) ---
 const unit = (v)=>{ const n=Math.hypot(v.x,v.y); return n>1e-6?{x:v.x/n,y:v.y/n}:{x:0,y:0}; };
 const sub  = (a,b)=>({x:a.x-b.x, y:a.y-b.y});
 const dotp = (a,b)=>a.x*b.x + a.y*b.y;
 const ang  = (a,b)=>{ const c=Math.max(-1,Math.min(1, dotp(unit(a),unit(b)))); return Math.acos(c)*180/Math.PI; };
 
-function pelvisBasis2D(LH, RH){
-  const x = unit(sub(RH,LH));
-  let midDown = unit({x:-x.y, y:x.x});      // statmena dubeniui
-  if (midDown.y < 0) midDown = {x:-midDown.x, y:-midDown.y}; // nukreipiam žemyn
-  return { x, midDown };
+// Kūno vidurio ašis: S_mid → H_mid (pečių vidurio taškas į klubų vidurio tašką), nukreipta žemyn
+function bodyMidlineFromLandmarks(L){
+  const S_mid = { x:(L.leftShoulder.x + L.rightShoulder.x)/2, y:(L.leftShoulder.y + L.rightShoulder.y)/2 };
+  const H_mid = { x:(L.leftHip.x + L.rightHip.x)/2,         y:(L.leftHip.y + L.rightHip.y)/2 };
+  let midDown = unit(sub(H_mid, S_mid));
+  if (midDown.y < 0) midDown = { x:-midDown.x, y:-midDown.y };
+  return { S_mid, H_mid, midDown };
 }
+
+// Abdukcija = kampas tarp šlaunies vektoriaus (HIP→KNEE) ir midDown (TOKS PAT, kaip manual app)
 function abductionPerHip2D(HIP, KNEE, midDown){
-  return ang(sub(KNEE, HIP), midDown); // kampas tarp šlaunies ir dubens „žemyn“ vektoriaus
+  return ang(sub(KNEE, HIP), midDown);
 }
 
-// --- glodinimas: median(5) + EMA(α=0.12) + šuolio ribojimas ---
-const SAFE = { abdMin:30, abdMax:45, abdWarnMax:55 };
-const EMA_A = 0.12, JUMP = 10;
-const qL=[], qR=[];
-let emaL=null, emaR=null;
-
-function pushQ(q, v){ q.push(v); if (q.length>5) q.shift(); }
-function median(q){ const s=[...q].sort((a,b)=>a-b); return s[Math.floor(s.length/2)]; }
-function smoothAngles(Lraw,Rraw){
-  pushQ(qL, Lraw); pushQ(qR, Rraw);
-  const Lm = (qL.length>=3)? median(qL) : Lraw;
-  const Rm = (qR.length>=3)? median(qR) : Rraw;
-  if (emaL!=null && Math.abs(Lm-emaL)>JUMP) return {L:emaL, R:emaR??Rm};
-  if (emaR!=null && Math.abs(Rm-emaR)>JUMP) return {L:emaL??Lm, R:emaR};
-  emaL = (emaL==null)? Lm : EMA_A*Lm + (1-EMA_A)*emaL;
-  emaR = (emaR==null)? Rm : EMA_A*Rm + (1-EMA_A)*emaR;
-  return { L:emaL, R:emaR };
-}
-const colAbd = (a)=> a>=SAFE.abdMin && a<=SAFE.abdMax ? '#34a853'
-                    : a>SAFE.abdMax && a<=SAFE.abdWarnMax ? '#f9ab00'
+// --- spalviniai lygiai (IDENTIŠKI) ---
+const SAFE = { greenMin:30, greenMax:45, yellowMax:60 };
+const colAbd = (a)=> a>=SAFE.greenMin && a<=SAFE.greenMax ? '#34a853'
+                    : a>SAFE.greenMax && a<=SAFE.yellowMax ? '#f9ab00'
                     : '#ea4335';
+
+// (jei norėtum glodinimo, galima gražinti – bet sakai, kad telefonas ant stovo, tai palieku be EMA/median)
 
 // --- kamera ---
 async function initCamera(){
+  if (!patientCode){
+    const cont = askPatientCode();
+    if (!cont) return;
+  }
   try{
     let constraints = { video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false };
     let stream = await navigator.mediaDevices.getUserMedia(constraints).catch(()=>null);
@@ -101,7 +108,6 @@ async function initCamera(){
 }
 
 function resizeCanvas(){
-  // 1:1 su rodomu video dydžiu – kad taškai sėstų tiksliai ant vaizdo
   const w = video.clientWidth, h = video.clientHeight;
   if (!w || !h) return;
   canvas.width = w; canvas.height = h;
@@ -125,49 +131,41 @@ async function initPose(){
     minTrackingConfidence:0.5
   });
 }
-const visOK = (lm)=> (lm.visibility ?? 1) >= 0.6;
+const visOK = (p)=> (p.visibility ?? 1) >= 0.6;
 
-// --- paskutinė būsena „sampleriui“ ---
-let latest = {
-  ok:false,
-  angles:null,
-  pelvisMidDown:null,
-  lms:null
-};
+// --- paskutinė būsena sampleriui ---
+let latest = { ok:false, angles:null, midline:null, lms:null };
 
-// --- minimalus overlay: pečiai/klubai/keliai taškai + HIP→KNEE linijos + vidurio linija ---
-function drawOverlay(L, angles){
+// --- overlay: pečiai/klubai/keliai + šlaunų linijos + S_mid↔H_mid vidurio linija ---
+function drawOverlay(L, angles, midline){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   if (!L) return;
 
   const toPx = (p)=>({ x:p.x*canvas.width, y:p.y*canvas.height });
 
-  // pixel koordinatės (tik reikalingi 6 taškai)
   const LS = toPx(L.leftShoulder),  RS = toPx(L.rightShoulder);
   const LH = toPx(L.leftHip),       RH = toPx(L.rightHip);
   const LK = toPx(L.leftKnee),      RK = toPx(L.rightKnee);
 
-  // pelvis midline
-  const basis = pelvisBasis2D(L.leftHip, L.rightHip);
-  const mid = { x: ((L.leftHip.x+L.rightHip.x)/2)*canvas.width,
-                y: ((L.leftHip.y+L.rightHip.y)/2)*canvas.height };
-  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(mid.x, mid.y);
-  ctx.lineTo(mid.x + basis.midDown.x*120, mid.y + basis.midDown.y*120);
-  ctx.stroke();
+  const Spt = toPx(midline.S_mid);
+  const Hpt = toPx(midline.H_mid);
 
-  // HIP→KNEE linijos (balta)
+  // midline S_mid → H_mid
+  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(Spt.x, Spt.y); ctx.lineTo(Hpt.x, Hpt.y); ctx.stroke();
+
+  // HIP→KNEE linijos
   ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 5; ctx.lineCap='round';
   ctx.beginPath(); ctx.moveTo(LH.x,LH.y); ctx.lineTo(LK.x,LK.y); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(RH.x,RH.y); ctx.lineTo(RK.x,RK.y); ctx.stroke();
 
-  // Taškai: pečiai, klubai, keliai (balti, maži)
+  // mažos žymės
   ctx.fillStyle = '#ffffff';
   for (const p of [LS, RS, LH, RH, LK, RK]){
     ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fill();
   }
 
-  // Kampo etiketės TIESIAI prie klubo taškų
+  // kampų etiketės
   const colorL = colAbd(angles.abdL);
   const colorR = colAbd(angles.abdR);
   ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto';
@@ -201,12 +199,12 @@ async function loop(){
   const out = await pose.detectForVideo(video, performance.now());
 
   if (out.landmarks && out.landmarks.length>0){
-    const lms = out.landmarks[0];
+    const lm = out.landmarks[0];
 
     const L = {
-      leftShoulder: lms[LM.LEFT_SHOULDER], rightShoulder: lms[LM.RIGHT_SHOULDER],
-      leftHip: lms[LM.LEFT_HIP], rightHip: lms[LM.RIGHT_HIP],
-      leftKnee: lms[LM.LEFT_KNEE], rightKnee: lms[LM.RIGHT_KNEE]
+      leftShoulder: lm[LM.LEFT_SHOULDER], rightShoulder: lm[LM.RIGHT_SHOULDER],
+      leftHip: lm[LM.LEFT_HIP], rightHip: lm[LM.RIGHT_HIP],
+      leftKnee: lm[LM.LEFT_KNEE], rightKnee: lm[LM.RIGHT_KNEE]
     };
     updateDebug(L);
 
@@ -215,38 +213,36 @@ async function loop(){
                visOK(L.leftKnee) && visOK(L.rightKnee);
 
     if (ok){
-      const { midDown } = pelvisBasis2D(L.leftHip, L.rightHip);
-      const rawL = abductionPerHip2D(L.leftHip, L.leftKnee, midDown);
-      const rawR = abductionPerHip2D(L.rightHip, L.rightKnee, midDown);
-      const { L:abdL, R:abdR } = smoothAngles(rawL, rawR);
+      // BENDRAS su manual app: S_mid → H_mid
+      const midline = bodyMidlineFromLandmarks(L);
+      const abdL = abductionPerHip2D(L.leftHip,  L.leftKnee,  midline.midDown);
+      const abdR = abductionPerHip2D(L.rightHip, L.rightKnee, midline.midDown);
 
-      drawOverlay(L, {abdL, abdR});
+      drawOverlay(L, {abdL, abdR}, midline);
 
       const avg = (abdL + abdR)/2;
       avgVal.textContent = isFinite(avg)? `${avg.toFixed(1)}°` : '–';
       abdLVal.textContent = isFinite(abdL)? `${abdL.toFixed(0)}°` : '–';
       abdRVal.textContent = isFinite(abdR)? `${abdR.toFixed(0)}°` : '–';
 
-      const color = colAbd(avg);
-      avgVal.style.color = color; abdLVal.style.color = color; abdRVal.style.color = color;
+      const colorAvg = colAbd(avg);
+      avgVal.style.color = colorAvg;
+      abdLVal.style.color = colAbd(abdL);
+      abdRVal.style.color = colAbd(abdR);
       dot.className = 'status-dot dot-active';
 
-      if (avg > SAFE.abdWarnMax)      warn.textContent = '⚠️ Per didelė abdukcija (>55°).';
-      else if (avg < SAFE.abdMin)     warn.textContent = '⚠️ Per maža abdukcija (<30°).';
-      else                             warn.textContent = 'Viskas ribose.';
+      if (avg > SAFE.yellowMax)       warn.textContent = '⚠️ Per didelė abdukcija (>60°).';
+      else if (avg < SAFE.greenMin)   warn.textContent = '⚠️ Per maža abdukcija (<30°).';
+      else if (avg <= SAFE.greenMax)  warn.textContent = 'Poza gera (30–45°).';
+      else                             warn.textContent = 'Įspėjimas: 45–60° (geltona zona).';
 
-      // atnaujinam "latest" sampleriui
       latest.ok = true;
       latest.angles = { abdL, abdR, avg };
-      latest.pelvisMidDown = midDown;
-      latest.lms = {
-        leftShoulder: L.leftShoulder, rightShoulder: L.rightShoulder,
-        leftHip: L.leftHip, rightHip: L.rightHip,
-        leftKnee: L.leftKnee, rightKnee: L.rightKnee
-      };
+      latest.midline = midline;
+      latest.lms = L;
 
     } else {
-      drawOverlay(null,{});
+      drawOverlay(null,{}, {S_mid:null,H_mid:null,midDown:null});
       avgVal.textContent='–'; abdLVal.textContent='–'; abdRVal.textContent='–';
       avgVal.style.color='#e5e7eb'; abdLVal.style.color='#e5e7eb'; abdRVal.style.color='#e5e7eb';
       dot.className = 'status-dot dot-idle';
@@ -254,7 +250,7 @@ async function loop(){
       latest.ok = false;
     }
   } else {
-    drawOverlay(null,{});
+    drawOverlay(null,{}, {S_mid:null,H_mid:null,midDown:null});
     label.textContent = 'Poza nerasta';
     dot.className = 'status-dot dot-idle';
     latest.ok = false;
@@ -272,7 +268,6 @@ function startCollect(){
   label.textContent = 'Įrašau (2 s)…';
   dlBtn.disabled = true;
 
-  // kas 10 ms – imame mėginį iš "latest"
   sampler = setInterval(()=>{
     const t = Date.now() - t0;
     const prog = (t/RECORD_MS)*100; bar.style.width = `${Math.min(100,prog)}%`;
@@ -284,25 +279,28 @@ function startCollect(){
     if (!latest.ok || !latest.angles) return;
 
     const L = latest.lms;
-    const md = latest.pelvisMidDown;
-    const A = latest.angles;
+    const md = latest.midline;
 
     collectedData.push({
       timestamp: Date.now(),
       time: t,
+      patientCode: patientCode || null,
       angles: {
-        abductionAvg: +A.avg.toFixed(2),
-        abductionLeft: +A.abdL.toFixed(2),
-        abductionRight: +A.abdR.toFixed(2)
+        abductionAvg:   +latest.angles.avg.toFixed(2),
+        abductionLeft:  +latest.angles.abdL.toFixed(2),
+        abductionRight: +latest.angles.abdR.toFixed(2)
       },
-      pelvis: { midDownX: md.x, midDownY: md.y },
+      midline: {
+        from: { x:+md.S_mid.x.toFixed(4), y:+md.S_mid.y.toFixed(4) },
+        to:   { x:+md.H_mid.x.toFixed(4), y:+md.H_mid.y.toFixed(4) }
+      },
       landmarks: {
-        leftShoulder: { x:L.leftShoulder.x, y:L.leftShoulder.y, v:L.leftShoulder.visibility??1 },
-        rightShoulder:{ x:L.rightShoulder.x,y:L.rightShoulder.y,v:L.rightShoulder.visibility??1 },
-        leftHip:      { x:L.leftHip.x,      y:L.leftHip.y,      v:L.leftHip.visibility??1 },
-        rightHip:     { x:L.rightHip.x,     y:L.rightHip.y,     v:L.rightHip.visibility??1 },
-        leftKnee:     { x:L.leftKnee.x,     y:L.leftKnee.y,     v:L.leftKnee.visibility??1 },
-        rightKnee:    { x:L.rightKnee.x,    y:L.rightKnee.y,    v:L.rightKnee.visibility??1 }
+        leftShoulder:  { x:L.leftShoulder.x,  y:L.leftShoulder.y,  v:L.leftShoulder.visibility??1 },
+        rightShoulder: { x:L.rightShoulder.x, y:L.rightShoulder.y, v:L.rightShoulder.visibility??1 },
+        leftHip:       { x:L.leftHip.x,       y:L.leftHip.y,       v:L.leftHip.visibility??1 },
+        rightHip:      { x:L.rightHip.x,      y:L.rightHip.y,      v:L.rightHip.visibility??1 },
+        leftKnee:      { x:L.leftKnee.x,      y:L.leftKnee.y,      v:L.leftKnee.visibility??1 },
+        rightKnee:     { x:L.rightKnee.x,     y:L.rightKnee.y,     v:L.rightKnee.visibility??1 }
       }
     });
   }, SAMPLE_MS);
