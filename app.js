@@ -74,35 +74,55 @@ const colAbd = (a)=> a>=SAFE.greenMin && a<=SAFE.greenMax ? '#34a853'
                     : a>SAFE.greenMax && a<=SAFE.yellowMax ? '#f9ab00'
                     : '#ea4335';
 
-// --- telefonos palinkimas (tilt), kaip manual app ---
-let tiltDeg = null; // laipsniais
-function onDeviceOrientation(e){
-  const portrait = window.innerHeight >= window.innerWidth;
-  const primaryTilt = portrait ? (e.gamma ?? 0) : (e.beta ?? 0); // ° apytiksliai
-  tiltDeg = Number(primaryTilt) || 0;
-  // rodom įspėjimą UI
-  if (Math.abs(tiltDeg) > 5) {
-    warn.textContent = `⚠️ Telefonas pakreiptas ${tiltDeg.toFixed(1)}° (>5°). Ištiesinkite įrenginį.`;
-  }
-}
-async function enableTilt(){
-  try{
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
-      const perm = await DeviceOrientationEvent.requestPermission();
-      if (perm !== 'granted') return;
-    }
-    window.addEventListener('deviceorientation', onDeviceOrientation, true);
-  }catch(_){}
-}
-
-// --- kamera ---
 async function initCamera(){
   if (!patientCode){
     const cont = askPatientCode();
     if (!cont) return;
   }
-  // bandome įjungti tilt jutiklį (tyliai) prieš pradedant
-  enableTilt();
+
+  // Įjungiam tilt jutiklį analogiškai kaip manual app
+  await enableSensors();
+  ...
+}
+
+// --- telefonos palinkimas (tilt) — kaip manual app ---
+let tiltDeg = null;    // esamas pakrypimas (laipsniais)
+let tiltOK  = null;    // ar |tilt| <= 5°
+let sensorsEnabled = false;
+
+function updateTiltWarn(){
+  if (tiltDeg == null){
+    // nieko nerodom kol nėra duomenų
+    return;
+  }
+  if (Math.abs(tiltDeg) > 5){
+    warn.textContent = `⚠️ Telefonas pakreiptas ${tiltDeg.toFixed(1)}° (>5°). Ištiesinkite įrenginį.`;
+  }
+}
+
+function onDeviceOrientation(e){
+  // ta pati logika kaip manual app'e:
+  const portrait = window.innerHeight >= window.innerWidth;
+  const primaryTilt = portrait ? (e.gamma ?? 0) : (e.beta ?? 0); // ° apytiksliai
+  tiltDeg = Number(primaryTilt) || 0;
+  tiltOK  = Math.abs(tiltDeg) <= 5;
+  updateTiltWarn();
+}
+
+async function enableSensors(){
+  try{
+    // iOS: leidimas PRIVALO būti paprašytas vartotojo gesto metu
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function'){
+      const perm = await DeviceOrientationEvent.requestPermission();
+      if (perm !== 'granted') throw new Error('Leidimas nesuteiktas');
+    }
+    window.addEventListener('deviceorientation', onDeviceOrientation, true);
+    sensorsEnabled = true;
+  }catch(e){
+    console.warn('Nepavyko įjungti tilt jutiklio:', e);
+  }
+}
 
   try{
     let constraints = { video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false };
