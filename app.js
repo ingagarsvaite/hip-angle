@@ -309,21 +309,63 @@ async function loop() {
 /* ===========================
    Drawing
    =========================== */
+/* ===========================
+   Drawing overlay (updated)
+   =========================== */
 function drawOverlay(L, angles, midline) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!L) return;
+
   const toPx = (p) => ({ x: p.x * canvas.width, y: p.y * canvas.height });
+
+  const LS = toPx(L.leftShoulder), RS = toPx(L.rightShoulder);
   const LH = toPx(L.leftHip), RH = toPx(L.rightHip);
   const LK = toPx(L.leftKnee), RK = toPx(L.rightKnee);
-  const Spt = toPx(midline.S_mid), Hpt = toPx(midline.H_mid);
+  const Spt = toPx(midline.S_mid);
+  const Hpt = toPx(midline.H_mid);
 
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(Spt.x, Spt.y); ctx.lineTo(Hpt.x, Hpt.y); ctx.stroke();
+  // --- 1️⃣ Nupiešiame visus 6 LANDMARKUS kaip raudonus taškus ---
+  const redPts = [LS, RS, LH, RH, LK, RK];
+  ctx.fillStyle = '#ff0000';
+  for (const p of redPts) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
-  ctx.beginPath(); ctx.moveTo(LH.x, LH.y); ctx.lineTo(LK.x, LK.y); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(RH.x, RH.y); ctx.lineTo(RK.x, RK.y); ctx.stroke();
+  // --- 2️⃣ Nupiešiame žalius VEKTORIUS ---
+  ctx.strokeStyle = '#00ff00';
+  ctx.lineWidth = 2;
+
+  // Midline (pečių vidurys -> klubų vidurys)
+  ctx.beginPath();
+  ctx.moveTo(Spt.x, Spt.y);
+  ctx.lineTo(Hpt.x, Hpt.y);
+  ctx.stroke();
+
+  // Kairė koja (kelis → klubas)
+  ctx.beginPath();
+  ctx.moveTo(LK.x, LK.y);
+  ctx.lineTo(LH.x, LH.y);
+  ctx.stroke();
+
+  // Dešinė koja (kelis → klubas)
+  ctx.beginPath();
+  ctx.moveTo(RK.x, RK.y);
+  ctx.lineTo(RH.x, RH.y);
+  ctx.stroke();
+
+  // --- 3️⃣ Parodome kampus ties klubais ---
+  const colorL = colAbd(angles.abdL);
+  const colorR = colAbd(angles.abdR);
+  ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = colorL;
+  ctx.fillText(`${angles.abdL.toFixed(0)}°`, LH.x + 8, LH.y - 8);
+  ctx.fillStyle = colorR;
+  ctx.fillText(`${angles.abdR.toFixed(0)}°`, RH.x + 8, RH.y - 8);
 }
+
 
 /* ===========================
    Events
