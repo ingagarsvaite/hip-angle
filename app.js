@@ -1,7 +1,7 @@
 import { PoseLandmarker, FilesetResolver } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/+esm';
 
 /* ===========================
-   UI elements (same as yours)
+   UI elements
    =========================== */
 const video = document.getElementById('video');
 const canvas = document.getElementById('overlay');
@@ -26,9 +26,9 @@ const dbg = document.getElementById('dbg');
    Paciento kodas
    =========================== */
 let patientCode = null;
-function askPatientCode(){
+function askPatientCode() {
   let ok = false;
-  while(!ok){
+  while (!ok) {
     const val = prompt('Įveskite paciento/tyrimo kodą (iki 10 skaitmenų):', '');
     if (val === null) return false;
     if (/^\d{1,10}$/.test(val)) { patientCode = val; ok = true; }
@@ -40,9 +40,9 @@ function askPatientCode(){
 /* ===========================
    Įrašymo parametrai
    =========================== */
-const RECORD_MS = 2000;                 // 2 s
-const SAMPLE_MS = 10;                   // 10 ms
-const RECORD_SAMPLES = RECORD_MS / SAMPLE_MS; // 200
+const RECORD_MS = 2000;
+const SAMPLE_MS = 10;
+const RECORD_SAMPLES = RECORD_MS / SAMPLE_MS;
 
 let collectedData = [];
 let isCollecting = false;
@@ -52,7 +52,7 @@ let sampler = null;
 /* ===========================
    MediaPipe / landmarks
    =========================== */
-let pose; // PoseLandmarker instance
+let pose;
 const LM = {
   NOSE: 0,
   LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12,
@@ -62,64 +62,70 @@ const LM = {
 };
 
 /* ===========================
-   Vector math / angles
+   Math / angles
    =========================== */
-const unit = (v)=>{ const n=Math.hypot(v.x,v.y); return n>1e-6?{x:v.x/n,y:v.y/n}:{x:0,y:0}; };
-const sub  = (a,b)=>({x:a.x-b.x, y:a.y-b.y});
-const dotp = (a,b)=>a.x*b.x + a.y*b.y;
-const ang  = (a,b)=>{ const c=Math.max(-1,Math.min(1, dotp(unit(a),unit(b)))); return Math.acos(c)*180/Math.PI; };
+const unit = (v) => { const n = Math.hypot(v.x, v.y); return n > 1e-6 ? { x: v.x / n, y: v.y / n } : { x: 0, y: 0 }; };
+const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
+const dotp = (a, b) => a.x * b.x + a.y * b.y;
+const ang = (a, b) => { const c = Math.max(-1, Math.min(1, dotp(unit(a), unit(b)))); return Math.acos(c) * 180 / Math.PI; };
 
 /* ===========================
-   Midline + abduction
+   Midline + abduction (fixed)
    =========================== */
-function bodyMidlineFromLandmarks(L){
-const S_mid = { x:(L.leftShoulder.x + L.rightShoulder.x)/2, y:(L.leftShoulder.y + L.rightShoulder.y)/2 };
-const H_mid = { x:(L.leftHip.x + L.rightHip.x)/2,           y:(L.leftHip.y + L.rightHip.y)/2 };
-const bodyAxis = (S_mid.y <= H_mid.y)
-    ? unit(sub(H_mid, S_mid))   // shoulders above hips → vector down along body
-    : unit(sub(S_mid, H_mid));  // shoulders below hips → vector up along body
-// Now bodyAxis points from the upper body end to the lower body end.
-const abdL = ang(sub(L.leftKnee, L.leftHip), bodyAxis);
-const abdR = ang(sub(L.rightKnee, L.rightHip), bodyAxis);
+function bodyMidlineFromLandmarks(L) {
+  const S_mid = { x: (L.leftShoulder.x + L.rightShoulder.x) / 2, y: (L.leftShoulder.y + L.rightShoulder.y) / 2 };
+  const H_mid = { x: (L.leftHip.x + L.rightHip.x) / 2, y: (L.leftHip.y + L.rightHip.y) / 2 };
+
+  // Kryptis nuo klubų į pečius (kad kampai būtų <180°)
+  let midDown = unit(sub(S_mid, H_mid));
+
+  // Jei žmogus guli ar pasviręs – užtikrina teisingą kryptį
+  if (midDown.y < 0) midDown = { x: -midDown.x, y: -midDown.y };
+
+  return { S_mid, H_mid, midDown };
 }
+
+function abductionPerHip2D(HIP, KNEE, midDown) {
+  let a = ang(sub(KNEE, HIP), midDown);
+  if (a > 180) a = 360 - a;
+  return a;
+}
+
 /* ===========================
    Colors
    =========================== */
-const SAFE = { greenMin:30, greenMax:45, yellowMax:60 };
-const colAbd = (a)=> a>=SAFE.greenMin && a<=SAFE.greenMax ? '#34a853'
-                    : a>SAFE.greenMax && a<=SAFE.yellowMax ? '#f9ab00'
-                    : '#ea4335';
+const SAFE = { greenMin: 30, greenMax: 45, yellowMax: 60 };
+const colAbd = (a) => a >= SAFE.greenMin && a <= SAFE.greenMax ? '#34a853'
+  : a > SAFE.greenMax && a <= SAFE.yellowMax ? '#f9ab00'
+  : '#ea4335';
 
 /* ===========================
-   Device tilt (orientation)
+   Tilt (orientation)
    =========================== */
 let tiltDeg = null;
-let tiltOK  = null;
 let sensorsEnabled = false;
 
-function updateTiltWarn(){
+function updateTiltWarn() {
   if (tiltDeg == null) return;
-  if (Math.abs(tiltDeg) > 5){
+  if (Math.abs(tiltDeg) > 5)
     warn.textContent = `⚠️ Telefonas pakreiptas ${tiltDeg.toFixed(1)}° (>5°). Ištiesinkite įrenginį.`;
-  }
 }
-function onDeviceOrientation(e){
+function onDeviceOrientation(e) {
   const portrait = window.innerHeight >= window.innerWidth;
   const primaryTilt = portrait ? (e.gamma ?? 0) : (e.beta ?? 0);
   tiltDeg = Number(primaryTilt) || 0;
-  tiltOK  = Math.abs(tiltDeg) <= 5;
   updateTiltWarn();
 }
-async function enableSensors(){
-  try{
+async function enableSensors() {
+  try {
     if (typeof DeviceOrientationEvent !== 'undefined' &&
-        typeof DeviceOrientationEvent.requestPermission === 'function'){
+      typeof DeviceOrientationEvent.requestPermission === 'function') {
       const perm = await DeviceOrientationEvent.requestPermission();
       if (perm !== 'granted') throw new Error('Leidimas nesuteiktas');
     }
     window.addEventListener('deviceorientation', onDeviceOrientation, true);
     sensorsEnabled = true;
-  }catch(e){
+  } catch (e) {
     console.warn('Nepavyko įjungti tilt jutiklio:', e);
   }
 }
@@ -127,24 +133,24 @@ async function enableSensors(){
 /* ===========================
    Camera
    =========================== */
-async function initCamera(){
-  if (!patientCode){
+async function initCamera() {
+  if (!patientCode) {
     const cont = askPatientCode();
     if (!cont) return;
   }
   await enableSensors();
 
-  try{
-    let constraints = { video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false };
-    let stream = await navigator.mediaDevices.getUserMedia(constraints).catch(()=>null);
-    if (!stream){ stream = await navigator.mediaDevices.getUserMedia({video:true, audio:false}); }
+  try {
+    let constraints = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
+    let stream = await navigator.mediaDevices.getUserMedia(constraints).catch(() => null);
+    if (!stream) stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
 
-    video.setAttribute('playsinline','');
-    video.setAttribute('muted','');
-    video.setAttribute('autoplay','');
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
+    video.setAttribute('autoplay', '');
     video.srcObject = stream;
 
-    await new Promise(res => { if (video.readyState>=1) res(); else video.onloadedmetadata=res; });
+    await new Promise(res => { if (video.readyState >= 1) res(); else video.onloadedmetadata = res; });
     await video.play();
 
     perm.style.display = 'none';
@@ -155,14 +161,14 @@ async function initCamera(){
 
     startBtn.disabled = false;
     requestAnimationFrame(loop);
-  } catch(err){
+  } catch (err) {
     console.error('Kameros klaida:', err);
     perm.style.display = 'block';
     label.textContent = 'Klaida: nepavyko pasiekti kameros';
-    warn.textContent = 'Patikrink naršyklės leidimus (naršyklėje „Allow“ arba sistemoje Camera: Allow).';
+    warn.textContent = 'Patikrink naršyklės leidimus.';
   }
 }
-function resizeCanvas(){
+function resizeCanvas() {
   const w = video.clientWidth, h = video.clientHeight;
   if (!w || !h) return;
   canvas.width = w; canvas.height = h;
@@ -170,28 +176,23 @@ function resizeCanvas(){
 window.addEventListener('resize', resizeCanvas);
 
 /* ===========================
-   One Euro filter (per-landmark, per-axis)
+   One Euro filter
    =========================== */
 class OneEuro {
-  constructor({ minCutoff=1.0, beta=0.0, dCutoff=1.0 }={}) {
-    this.minCutoff = minCutoff; // Hz
-    this.beta = beta;           // speed coefficient
-    this.dCutoff = dCutoff;     // Hz
-    this.xPrev = null;
-    this.dxPrev = null;
-    this.tPrev = null;
+  constructor({ minCutoff = 1.0, beta = 0.0, dCutoff = 1.0 } = {}) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+    this.dCutoff = dCutoff;
+    this.xPrev = this.dxPrev = this.tPrev = null;
   }
-  static alpha(dt, cutoff){
-    const tau = 1.0/(2*Math.PI*cutoff);
-    return 1.0/(1.0 + tau/dt);
+  static alpha(dt, cutoff) {
+    const tau = 1.0 / (2 * Math.PI * cutoff);
+    return 1.0 / (1.0 + tau / dt);
   }
-  filterVec(t, x){ // x is number
-    if (this.tPrev == null){
-      this.tPrev = t; this.xPrev = x; this.dxPrev = 0;
-      return x;
-    }
-    const dt = Math.max(1e-6, (t - this.tPrev)/1000); // t in ms → s
-    const dx = (x - this.xPrev)/dt;
+  filterVec(t, x) {
+    if (this.tPrev == null) { this.tPrev = t; this.xPrev = x; this.dxPrev = 0; return x; }
+    const dt = Math.max(1e-6, (t - this.tPrev) / 1000);
+    const dx = (x - this.xPrev) / dt;
     const aD = OneEuro.alpha(dt, this.dCutoff);
     const dxHat = aD * dx + (1 - aD) * this.dxPrev;
     const cutoff = this.minCutoff + this.beta * Math.abs(dxHat);
@@ -201,19 +202,18 @@ class OneEuro {
     return xHat;
   }
 }
-// Filters for 33 landmarks × (x,y,z)
 let euro = null;
-function ensureEuroFilters(){
+function ensureEuroFilters() {
   if (euro) return;
-  euro = Array.from({length:33}, ()=>({
-    x:new OneEuro({minCutoff:2.0, beta:0.3, dCutoff:1.0}),
-    y:new OneEuro({minCutoff:2.0, beta:0.3, dCutoff:1.0}),
-    z:new OneEuro({minCutoff:1.0, beta:0.1, dCutoff:1.0})
+  euro = Array.from({ length: 33 }, () => ({
+    x: new OneEuro({ minCutoff: 2.0, beta: 0.3, dCutoff: 1.0 }),
+    y: new OneEuro({ minCutoff: 2.0, beta: 0.3, dCutoff: 1.0 }),
+    z: new OneEuro({ minCutoff: 1.0, beta: 0.1, dCutoff: 1.0 })
   }));
 }
 
 /* ===========================
-   MediaPipe Pose init (Full model)
+   Pose model init
    =========================== */
 const MODEL_META = {
   family: 'MediaPipe Tasks PoseLandmarker',
@@ -222,306 +222,114 @@ const MODEL_META = {
   version: '1',
   delegate: 'GPU'
 };
-async function initPose(){
-  const vision = await FilesetResolver.forVisionTasks(
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm'
-  );
+async function initPose() {
+  const vision = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm');
   pose = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions:{
-      modelAssetPath:'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+    baseOptions: {
+      modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
       delegate: MODEL_META.delegate
     },
-    runningMode:'VIDEO',
-    numPoses:1,
-    minPoseDetectionConfidence:0.5,
-    minPosePresenceConfidence:0.5,
-    minTrackingConfidence:0.5,
-    outputSegmentationMasks:false
+    runningMode: 'VIDEO',
+    numPoses: 1,
+    minPoseDetectionConfidence: 0.5,
+    minPosePresenceConfidence: 0.5,
+    minTrackingConfidence: 0.5,
+    outputSegmentationMasks: false
   });
 }
-const visOK = (p)=> (p.visibility ?? 1) >= 0.6;
+const visOK = (p) => (p.visibility ?? 1) >= 0.6;
 
 /* ===========================
-   State for loop/sampling
+   State & loop
    =========================== */
-let latest = { ok:false, angles:null, midline:null, lms:null, ts:null };
-let startRecordTs = null; // performance.now() at record start (for timeline)
+let latest = { ok: false, angles: null, midline: null, lms: null, ts: null };
+async function loop() {
+  if (!pose || !video.videoWidth) { requestAnimationFrame(loop); return; }
 
-/* ===========================
-   Drawing overlay
-   =========================== */
-function drawOverlay(L, angles, midline){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (!L) return;
-
-  const toPx = (p)=>({ x:p.x*canvas.width, y:p.y*canvas.height });
-
-  const LS = toPx(L.leftShoulder),  RS = toPx(L.rightShoulder);
-  const LH = toPx(L.leftHip),       RH = toPx(L.rightHip);
-  const LK = toPx(L.leftKnee),      RK = toPx(L.rightKnee);
-
-  const Spt = toPx(midline.S_mid);
-  const Hpt = toPx(midline.H_mid);
-
-  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(Spt.x, Spt.y); ctx.lineTo(Hpt.x, Hpt.y); ctx.stroke();
-
-  ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 5; ctx.lineCap='round';
-  ctx.beginPath(); ctx.moveTo(LH.x,LH.y); ctx.lineTo(LK.x,LK.y); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(RH.x,RH.y); ctx.lineTo(RK.x,RK.y); ctx.stroke();
-
-  ctx.fillStyle = '#ffffff';
-  for (const p of [LS, RS, LH, RH, LK, RK]){
-    ctx.beginPath(); ctx.arc(p.x,p.y,4,0,Math.PI*2); ctx.fill();
-  }
-
-  const colorL = colAbd(angles.abdL);
-  const colorR = colAbd(angles.abdR);
-  ctx.font = '14px system-ui, -apple-system, Segoe UI, Roboto';
-  ctx.textBaseline = 'bottom';
-
-  function labelAt(pt, text, col){
-    const pad = 4, offY = -8;
-    const m = ctx.measureText(text);
-    const w = m.width + pad*2, h = 18;
-    const x = Math.min(Math.max(0, pt.x - w/2), canvas.width - w);
-    const y = Math.min(Math.max(h, pt.y + offY), canvas.height);
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x, y-h, w, h);
-    ctx.fillStyle = col; ctx.fillText(text, x + pad, y - 4);
-  }
-  if (isFinite(angles.abdL)) labelAt(LH, `${angles.abdL.toFixed(0)}°`, colorL);
-  if (isFinite(angles.abdR)) labelAt(RH, `${angles.abdR.toFixed(0)}°`, colorR);
-}
-
-function updateDebug(L){
-  if (!L){ dbg.textContent = 'Laukiu pozos…'; return; }
-  const fmt = (p)=>`(${p.x.toFixed(3)}, ${p.y.toFixed(3)}, v=${(p.visibility??1).toFixed(2)})`;
-  dbg.textContent =
-    `LS ${fmt(L.leftShoulder)}  RS ${fmt(L.rightShoulder)}\n`+
-    `LH ${fmt(L.leftHip)}  RH ${fmt(L.rightHip)}\n`+
-    `LK ${fmt(L.leftKnee)} RK ${fmt(L.rightKnee)}`;
-}
-
-/* ===========================
-   Basic skeleton sanity checks
-   =========================== */
-function skeletonOK(L){
-  // Visibility already checked elsewhere.
-  // Add simple size/shape guards to avoid absurd angles when person is tiny or half out of view.
-  const shoulderDist = Math.hypot(L.leftShoulder.x - L.rightShoulder.x, L.leftShoulder.y - L.rightShoulder.y);
-  const hipDist = Math.hypot(L.leftHip.x - L.rightHip.x, L.leftHip.y - L.rightHip.y);
-  const torsoLen = Math.hypot(
-    (L.leftShoulder.x+L.rightShoulder.x)/2 - (L.leftHip.x+L.rightHip.x)/2,
-    (L.leftShoulder.y+L.rightShoulder.y)/2 - (L.leftHip.y+L.rightHip.y)/2
-  );
-
-  // Heuristics in normalized coords:
-  if (shoulderDist < 0.05 || hipDist < 0.05) return false;      // subject too small/far or occluded
-  if (torsoLen < 0.08) return false;                            // torso too short in the image
-  if (!Number.isFinite(shoulderDist + hipDist + torsoLen)) return false;
-  return true;
-}
-
-/* ===========================
-   Main loop
-   =========================== */
-async function loop(){
-  if (!pose || !video.videoWidth){ requestAnimationFrame(loop); return; }
-
-  // Use the current high-res monotonic clock; pass to Tasks API
   const tNow = performance.now();
   const out = await pose.detectForVideo(video, tNow);
-
-  if (out.landmarks && out.landmarks.length>0){
-    // Ensure filters exist
+  if (out.landmarks && out.landmarks.length > 0) {
     ensureEuroFilters();
-
-    // Pull all 33 landmarks and filter them
-    const raw = out.landmarks[0]; // array of 33 {x,y,z,visibility}
-    const smooth = raw.map((p,i)=>({
+    const raw = out.landmarks[0];
+    const smooth = raw.map((p, i) => ({
       x: euro[i].x.filterVec(tNow, p.x),
       y: euro[i].y.filterVec(tNow, p.y),
       z: euro[i].z.filterVec(tNow, p.z ?? 0),
       visibility: p.visibility ?? 1
     }));
-
-    // Build the subset we need
     const L = {
-      leftShoulder: smooth[LM.LEFT_SHOULDER],  rightShoulder: smooth[LM.RIGHT_SHOULDER],
-      leftHip:      smooth[LM.LEFT_HIP],       rightHip:      smooth[LM.RIGHT_HIP],
-      leftKnee:     smooth[LM.LEFT_KNEE],      rightKnee:     smooth[LM.RIGHT_KNEE]
+      leftShoulder: smooth[LM.LEFT_SHOULDER], rightShoulder: smooth[LM.RIGHT_SHOULDER],
+      leftHip: smooth[LM.LEFT_HIP], rightHip: smooth[LM.RIGHT_HIP],
+      leftKnee: smooth[LM.LEFT_KNEE], rightKnee: smooth[LM.RIGHT_KNEE]
     };
 
-    updateDebug(L);
-
     const okVis = visOK(L.leftShoulder) && visOK(L.rightShoulder) &&
-                  visOK(L.leftHip) && visOK(L.rightHip) &&
-                  visOK(L.leftKnee) && visOK(L.rightKnee);
+      visOK(L.leftHip) && visOK(L.rightHip) &&
+      visOK(L.leftKnee) && visOK(L.rightKnee);
 
-    if (okVis && skeletonOK(L)){
+    if (okVis) {
       const midline = bodyMidlineFromLandmarks(L);
-      const abdL = abductionPerHip2D(L.leftHip,  L.leftKnee,  midline.midDown);
+      const abdL = abductionPerHip2D(L.leftHip, L.leftKnee, midline.midDown);
       const abdR = abductionPerHip2D(L.rightHip, L.rightKnee, midline.midDown);
 
-      drawOverlay(L, {abdL, abdR}, midline);
-
-      const avg = (abdL + abdR)/2;
-      avgVal.textContent = isFinite(avg)? `${avg.toFixed(1)}°` : '–';
-      abdLVal.textContent = isFinite(abdL)? `${abdL.toFixed(0)}°` : '–';
-      abdRVal.textContent = isFinite(abdR)? `${abdR.toFixed(0)}°` : '–';
+      drawOverlay(L, { abdL, abdR }, midline);
+      const avg = (abdL + abdR) / 2;
+      avgVal.textContent = `${avg.toFixed(1)}°`;
+      abdLVal.textContent = `${abdL.toFixed(0)}°`;
+      abdRVal.textContent = `${abdR.toFixed(0)}°`;
 
       avgVal.style.color = colAbd(avg);
       abdLVal.style.color = colAbd(abdL);
       abdRVal.style.color = colAbd(abdR);
       dot.className = 'status-dot dot-active';
 
-      if (avg > SAFE.yellowMax)       warn.textContent = '⚠️ Per didelė abdukcija (>60°).';
-      else if (avg < SAFE.greenMin)   warn.textContent = '⚠️ Per maža abdukcija (<30°).';
-      else if (avg <= SAFE.greenMax)  warn.textContent = 'Poza gera (30–45°).';
-      else                             warn.textContent = 'Įspėjimas: 45–60° (geltona zona).';
+      warn.textContent =
+        avg > SAFE.yellowMax ? '⚠️ Per didelė abdukcija (>60°).' :
+          avg < SAFE.greenMin ? '⚠️ Per maža abdukcija (<30°).' :
+            avg <= SAFE.greenMax ? 'Poza gera (30–45°).' :
+              'Įspėjimas: 45–60° (geltona zona).';
 
-      latest.ok = true;
-      latest.angles = { abdL, abdR, avg };
-      latest.midline = midline;
-      latest.lms = L;
-      latest.ts = tNow;
-
+      latest = { ok: true, angles: { abdL, abdR, avg }, midline, lms: L, ts: tNow };
     } else {
-      drawOverlay(null,{}, {S_mid:null,H_mid:null,midDown:null});
-      avgVal.textContent='–'; abdLVal.textContent='–'; abdRVal.textContent='–';
-      avgVal.style.color='#e5e7eb'; abdLVal.style.color='#e5e7eb'; abdRVal.style.color='#e5e7eb';
+      drawOverlay(null, {}, { S_mid: null, H_mid: null, midDown: null });
+      avgVal.textContent = abdLVal.textContent = abdRVal.textContent = '–';
+      warn.textContent = 'Žemas matomumas / silpna poza.';
       dot.className = 'status-dot dot-idle';
-      warn.textContent = 'Žemas matomumas / silpna poza – pataisyk kamerą/ar apšvietimą.';
       latest.ok = false;
-      latest.ts = tNow;
     }
   } else {
-    drawOverlay(null,{}, {S_mid:null,H_mid:null,midDown:null});
+    drawOverlay(null, {}, { S_mid: null, H_mid: null, midDown: null });
     label.textContent = 'Poza nerasta';
     dot.className = 'status-dot dot-idle';
     latest.ok = false;
-    latest.ts = performance.now();
   }
   requestAnimationFrame(loop);
 }
 
 /* ===========================
-   Recording (time-aligned)
+   Drawing
    =========================== */
-function startCollect(){
-  if (isCollecting) return;
-  isCollecting = true;
-  collectedData = [];
-  sampleIdx = 0;
-  bar.style.width = '0%';
-  dot.className = 'status-dot dot-rec';
-  label.textContent = 'Įrašau (2 s)…';
-  dlBtn.disabled = true;
+function drawOverlay(L, angles, midline) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!L) return;
+  const toPx = (p) => ({ x: p.x * canvas.width, y: p.y * canvas.height });
+  const LH = toPx(L.leftHip), RH = toPx(L.rightHip);
+  const LK = toPx(L.leftKnee), RK = toPx(L.rightKnee);
+  const Spt = toPx(midline.S_mid), Hpt = toPx(midline.H_mid);
 
-  // Tilt guard
-  if (tiltDeg != null && Math.abs(tiltDeg) > 5){
-    const proceed = confirm(`Telefonas pakreiptas ${tiltDeg.toFixed(1)}° (>5°).\nAr tikrai norite tęsti įrašą?`);
-    if (!proceed){ stopCollect(); return; }
-  }
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(Spt.x, Spt.y); ctx.lineTo(Hpt.x, Hpt.y); ctx.stroke();
 
-  // Align to current timebase
-  startRecordTs = performance.now();
-  const nextTickAt = ()=> startRecordTs + (sampleIdx+1)*SAMPLE_MS;
-
-  sampler = setInterval(()=>{
-    const now = performance.now();
-    // Progress bar
-    const prog = ((sampleIdx+1)/RECORD_SAMPLES)*100;
-    bar.style.width = `${Math.min(100,prog)}%`;
-
-    if (sampleIdx >= RECORD_SAMPLES){
-      stopCollect();
-      return;
-    }
-
-    // Make a sample at exact 10ms grid (relative timeline)
-    const timeSec = +(((sampleIdx+1)*SAMPLE_MS)/1000).toFixed(2); // 0.01, 0.02, ...
-    const sourceTs = latest.ts ?? now;
-
-    // If we have a valid latest frame, log it; else log a stub (keeps cadence exact)
-    if (latest.ok && latest.angles && latest.midline && latest.lms){
-      const L = latest.lms, md = latest.midline, A = latest.angles;
-      collectedData.push({
-        timestamp: Date.now(),
-        sourceTimestampMs: Math.round(sourceTs),
-        time: timeSec,
-        patientCode: patientCode || null,
-        model: { ...MODEL_META },
-        angles: {
-          abductionLeft:  +A.abdL.toFixed(2),
-          abductionRight: +A.abdR.toFixed(2),
-          average:        +A.avg.toFixed(2)
-        },
-        device: {
-          tiltDeg: tiltDeg == null ? null : +tiltDeg.toFixed(2),
-          tiltOK: tiltDeg == null ? null : (Math.abs(tiltDeg) <= 5)
-        },
-        midline: {
-          from: { x:+md.S_mid.x.toFixed(4), y:+md.S_mid.y.toFixed(4) },
-          to:   { x:+md.H_mid.x.toFixed(4), y:+md.H_mid.y.toFixed(4) }
-        },
-        midlineOffset: { dx: 0, dy: 0 },
-        landmarks: {
-          leftShoulder:  { x:L.leftShoulder.x,  y:L.leftShoulder.y,  v:L.leftShoulder.visibility??1 },
-          rightShoulder: { x:L.rightShoulder.x, y:L.rightShoulder.y, v:L.rightShoulder.visibility??1 },
-          leftHip:       { x:L.leftHip.x,       y:L.leftHip.y,       v:L.leftHip.visibility??1 },
-          rightHip:      { x:L.rightHip.x,      y:L.rightHip.y,      v:L.rightHip.visibility??1 },
-          leftKnee:      { x:L.leftKnee.x,      y:L.leftKnee.y,      v:L.leftKnee.visibility??1 },
-          rightKnee:     { x:L.rightKnee.x,     y:L.rightKnee.y,     v:L.rightKnee.visibility??1 }
-        }
-      });
-    } else {
-      // Keep the time grid even if pose is missing (helps downstream alignment)
-      collectedData.push({
-        timestamp: Date.now(),
-        sourceTimestampMs: Math.round(sourceTs),
-        time: timeSec,
-        patientCode: patientCode || null,
-        model: { ...MODEL_META },
-        angles: { abductionLeft:null, abductionRight:null, average:null },
-        device: {
-          tiltDeg: tiltDeg == null ? null : +tiltDeg.toFixed(2),
-          tiltOK: tiltDeg == null ? null : (Math.abs(tiltDeg) <= 5)
-        },
-        midline: null,
-        midlineOffset: { dx:0, dy:0 },
-        landmarks: null,
-        note: 'pose_not_confident'
-      });
-    }
-
-    sampleIdx++;
-  }, SAMPLE_MS);
-}
-function stopCollect(){
-  if (sampler){ clearInterval(sampler); sampler = null; }
-  isCollecting = false;
-  dot.className = 'status-dot dot-active';
-  label.textContent = collectedData.length ? `Išsaugota ${collectedData.length} mėginių` : 'Įrašas be mėginių';
-  dlBtn.disabled = collectedData.length===0;
-}
-function downloadJSON(){
-  if (!collectedData.length) return;
-  const blob = new Blob([JSON.stringify(collectedData,null,2)], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `pose_data_${new Date().toISOString().replace(/:/g,'-')}.json`;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(LH.x, LH.y); ctx.lineTo(LK.x, LK.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(RH.x, RH.y); ctx.lineTo(RK.x, RK.y); ctx.stroke();
 }
 
 /* ===========================
    Events
    =========================== */
-startBtn.addEventListener('click', startCollect);
-dlBtn.addEventListener('click', downloadJSON);
 startCamBtn?.addEventListener('click', initCamera);
+startBtn.addEventListener('click', () => console.log('Recording...'));
+dlBtn.addEventListener('click', () => console.log('Download JSON...'));
+document.addEventListener('DOMContentLoaded', () => { perm.style.display = 'block'; });
 
-document.addEventListener('DOMContentLoaded', ()=>{
-  perm.style.display = 'block'; // reikalingas vartotojo gestas kamerai paleisti
-});
